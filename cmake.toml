@@ -1,0 +1,75 @@
+# Reference: https://build-cpp.github.io/cmkr/cmake-toml
+[project]
+name = "regenny"
+
+[vcpkg]
+version = "2021.12.01"
+packages = [
+    "imgui[docking-experimental,freetype,sdl2-binding,opengl3-binding]",
+    "fmt",
+    "pegtl",
+    "nativefiledialog",
+    "spdlog",
+    "utfcpp",
+    "nlohmann-json",
+    "glad[gl-api-30]",
+]
+
+[fetch-content]
+sdkgenny = { git = "https://github.com/cursey/sdkgenny.git", tag = "53c2d5e9e59548156edabe1666b4056c559086e0" }
+
+[find-package]
+imgui = {}
+fmt = {}
+pegtl = {}
+unofficial-nativefiledialog = {}
+spdlog = {}
+utf8cpp = {}
+SDL2 = {}
+nlohmann_json = {}
+glad = {}
+
+[conditions]
+static = "${VCPKG_TARGET_TRIPLET} MATCHES \".+static\""
+
+[target.regenny]
+type = "executable"
+sources = [
+    "src/**.cpp",
+    "src/**.hpp",
+    "thirdparty/**.cpp",
+    "thirdparty/**.hpp",
+    "thirdparty/**.h",
+]
+windows.sources = ["src/**.rc"]
+include-directories = [
+    "src/",
+    "thirdparty/scope_gaurd/",
+    "thirdparty/SDL_Trigger/",
+]
+link-libraries = [
+    "imgui::imgui",
+    "fmt::fmt",
+    "taocpp::pegtl",
+    "unofficial::nativefiledialog::nfd",
+    "spdlog::spdlog",
+    "utf8cpp",
+    "SDL2::SDL2",
+    "SDL2::SDL2main",
+    "nlohmann_json::nlohmann_json",
+    "glad::glad",
+    "sdkgenny::sdkgenny",
+]
+compile-definitions = ["UTF_CPP_CPLUSPLUS=201103L"]
+compile-features = ["cxx_std_17"]
+
+[target.regenny.properties]
+static.MSVC_RUNTIME_LIBRARY = "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+
+[target.test0]
+type = "executable"
+sources = ["examples/test0.cpp"]
+
+[[install]]
+targets = ["regenny"]
+destination = "bin"

@@ -31,8 +31,8 @@ project(regenny)
 
 if(CMKR_ROOT_PROJECT AND NOT CMKR_DISABLE_VCPKG)
 	include(FetchContent)
-	message(STATUS "Fetching vcpkg (2022.05.10)...")
-	FetchContent_Declare(vcpkg URL "https://github.com/microsoft/vcpkg/archive/refs/tags/2022.05.10.tar.gz")
+	message(STATUS "Fetching vcpkg (2022.08.15)...")
+	FetchContent_Declare(vcpkg URL "https://github.com/microsoft/vcpkg/archive/refs/tags/2022.08.15.tar.gz")
 	FetchContent_GetProperties(vcpkg)
 	if(NOT vcpkg_POPULATED)
 		FetchContent_Populate(vcpkg)
@@ -42,14 +42,23 @@ endif()
 
 include(FetchContent)
 
-message(STATUS "Fetching sdkgenny (a36fe4c6f16041602be302c2a2e623e43ea92108)...")
+message(STATUS "Fetching sdkgenny (2bf398fdcc48346486b0e754a93da21fb788e245)...")
 FetchContent_Declare(sdkgenny
 	GIT_REPOSITORY
 		"https://github.com/cursey/sdkgenny.git"
 	GIT_TAG
-		a36fe4c6f16041602be302c2a2e623e43ea92108
+		2bf398fdcc48346486b0e754a93da21fb788e245
 )
 FetchContent_MakeAvailable(sdkgenny)
+
+message(STATUS "Fetching luagenny (5cdafd93b175a5aca92b5de935aa5c702a3b6ee7)...")
+FetchContent_Declare(luagenny
+	GIT_REPOSITORY
+		"https://github.com/praydog/luagenny.git"
+	GIT_TAG
+		5cdafd93b175a5aca92b5de935aa5c702a3b6ee7
+)
+FetchContent_MakeAvailable(luagenny)
 
 # Packages
 find_package(imgui REQUIRED)
@@ -69,6 +78,10 @@ find_package(SDL2 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 find_package(glad REQUIRED)
+
+find_package(sol2 REQUIRED)
+
+find_package(lua REQUIRED)
 
 # Target regenny
 set(CMKR_TARGET regenny)
@@ -92,6 +105,7 @@ list(APPEND regenny_SOURCES
 	"src/node/Pointer.cpp"
 	"src/node/Struct.cpp"
 	"src/node/Undefined.cpp"
+	"src/node/UndefinedBitfield.cpp"
 	"src/node/Variable.cpp"
 	"src/AboutUi.hpp"
 	"src/Config.hpp"
@@ -111,6 +125,7 @@ list(APPEND regenny_SOURCES
 	"src/node/Property.hpp"
 	"src/node/Struct.hpp"
 	"src/node/Undefined.hpp"
+	"src/node/UndefinedBitfield.hpp"
 	"src/node/Variable.hpp"
 	"thirdparty/SDL_Trigger/sdl_trigger.cpp"
 	"thirdparty/scope_gaurd/scope_guard.hpp"
@@ -167,14 +182,10 @@ target_link_libraries(regenny PRIVATE
 	nlohmann_json::nlohmann_json
 	glad::glad
 	sdkgenny::sdkgenny
+	lua
+	sol2
+	luagenny::luagenny
 )
-
-if(${VCPKG_TARGET_TRIPLET} MATCHES ".+static") # static
-	set_target_properties(regenny PROPERTIES
-		MSVC_RUNTIME_LIBRARY
-			"MultiThreaded$<$<CONFIG:Debug>:Debug>"
-	)
-endif()
 
 unset(CMKR_TARGET)
 unset(CMKR_SOURCES)
@@ -205,14 +216,10 @@ endif()
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${test0_SOURCES})
 
+target_compile_features(test0 PRIVATE
+	cxx_std_17
+)
+
 unset(CMKR_TARGET)
 unset(CMKR_SOURCES)
 
-install(
-	TARGETS
-		regenny
-	DESTINATION
-		bin
-	COMPONENT
-		regenny
-)

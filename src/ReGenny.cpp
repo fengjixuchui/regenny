@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <type_traits>
 
+#include <LuaGenny.h>
 #include <fmt/format.h>
 #include <imgui.h>
 #include <imgui_impl_opengl3.h>
@@ -11,7 +12,6 @@
 #include <imgui_stdlib.h>
 #include <nfd.h>
 #include <spdlog/spdlog.h>
-#include <LuaGenny.hpp>
 
 #include "AboutUi.hpp"
 #include "GennyParser.hpp"
@@ -160,16 +160,93 @@ void ReGenny::ui() {
     ImGui::Begin("LuaEval");
 
     ImGui::BeginChild("luaeval");
-    char eval[256]{};
+    std::array<char, 256> eval{};
     ImGui::PushItemWidth(ImGui::GetWindowWidth());
-    if (ImGui::InputText("eval", eval, 256, ImGuiInputTextFlags_EnterReturnsTrue)) {
+
+    if (m_reapply_focus_eval) {
+        ImGui::SetKeyboardFocusHere();
+        m_reapply_focus_eval = false;
+    }
+
+    auto eval_cb = [](ImGuiInputTextCallbackData* data) -> int {
+        auto rg = reinterpret_cast<ReGenny*>(data->UserData);
+
+        if (data->EventFlag == ImGuiInputTextFlags_CallbackHistory) {
+            if (data->EventKey == ImGuiKey_UpArrow) {
+                if (rg->eval_history_index() > 0) {
+                    rg->eval_history_index()--;
+                }
+            } else if (data->EventKey == ImGuiKey_DownArrow) {
+                if (rg->eval_history_index() < rg->eval_history().size()) {
+                    rg->eval_history_index()++;
+                }
+            }
+
+            if (rg->eval_history_index() < rg->eval_history().size()) {
+                data->DeleteChars(0, data->BufTextLen);
+                data->InsertChars(0, rg->eval_history()[rg->eval_history_index()].c_str());
+            }
+        }
+
+        return 0;
+    };
+
+    if (ImGui::InputText("eval", eval.data(), 256,
+            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory, eval_cb, this)) {
+        if (m_eval_history.size() >= 20) {
+            m_eval_history.pop_front();
+        }
+
+        m_eval_history.push_back(eval.data());
+        m_eval_history_index = m_eval_history.size();
+
         try {
-            sol::protected_function_result result = m_lua->safe_script(eval);
-        } catch(const std::exception& e) {
-            spdlog::error("{}", e.what());
-        } catch(...) {
+            if (std::string_view{eval.data()} == "clear") {
+                m_logger.clear();
+            } else {
+                auto result = m_lua->safe_script(std::string{"return "} + eval.data());
+
+                if (!result.valid()) {
+                    result = m_lua->safe_script(eval.data());
+
+                    if (!result.valid()) {
+                        sol::script_default_on_error(*m_lua, std::move(result));
+                    }
+                } else {
+                    auto obj = result.get<sol::object>();
+
+                    obj.push();
+                    auto str = luaL_tolstring(*m_lua, -1, nullptr);
+
+                    if (str != nullptr) {
+                        spdlog::info("{}", str);
+                    }
+
+                    obj.pop();
+                }
+            }
+        } catch (const std::exception& e) {
+            if (std::string_view{e.what()}.find("<eof>") != std::string_view::npos) {
+                // Try again without the return
+                try {
+                    auto result = m_lua->safe_script(eval.data());
+
+                    if (!result.valid()) {
+                        sol::script_default_on_error(*m_lua, std::move(result));
+                    }
+                } catch (const std::exception& e) {
+                    spdlog::error("{}", e.what());
+                } catch (...) {
+                    spdlog::error("Unknown exception");
+                }
+            } else {
+                spdlog::error("{}", e.what());
+            }
+        } catch (...) {
             spdlog::error("Unknown exception");
         }
+
+        m_reapply_focus_eval = true;
     }
     ImGui::PopItemWidth();
     ImGui::EndChild();
@@ -850,15 +927,15 @@ void ReGenny::editor_ui() {
 void ReGenny::reset_lua_state() {
     std::scoped_lock _{m_lua_lock};
 
-    m_lua.reset();
     m_lua = std::make_unique<sol::state>();
-
-    m_lua->open_libraries(sol::lib::base, sol::lib::package, sol::lib::string, sol::lib::math, sol::lib::table, sol::lib::bit32,
-    sol::lib::utf8, sol::lib::os, sol::lib::coroutine);
-
     auto& lua = *m_lua;
 
-    luagenny::open(lua);
+    m_lua->open_libraries(sol::lib::base, sol::lib::package, sol::lib::string, sol::lib::math, sol::lib::table,
+        sol::lib::bit32, sol::lib::utf8, sol::lib::os, sol::lib::coroutine, sol::lib::io);
+    luaopen_luagenny(lua);
+
+    // clang-format off
+
     lua["sdkgenny"] = sol::stack::pop<sol::table>(*m_lua);
     lua["print"] = [](const char* text) {
         spdlog::info("{}", text);
@@ -960,15 +1037,51 @@ void ReGenny::reset_lua_state() {
         "write_int64", [](Process* p, uintptr_t addr, int64_t val) { p->write<int64_t>(addr, val); },
         "write_float", [](Process* p, uintptr_t addr, float val) { p->write<float>(addr, val); },
         "write_double", [](Process* p, uintptr_t addr, double val) { p->write<double>(addr, val); },
-        "read_string", read_string
+        "read_string", read_string,
+        "protect", &Process::protect,
+        "allocate", [](Process* p, uintptr_t addr, size_t size, sol::object flags_obj) {
+            uint64_t flags{};
+
+            if (flags_obj.is<uint64_t>()) {
+                flags = flags_obj.as<uint64_t>();
+            }
+
+            return p->allocate(addr, size, flags);
+        },
+        "get_module_within", &Process::get_module_within,
+        "get_module", &Process::get_module,
+        "modules", &Process::modules,
+        "allocations", &Process::allocations
     );
 
 #ifdef _WIN32
     m_lua->new_usertype<arch::WindowsProcess>("ReGennyWindowsProcess",
         sol::base_classes, sol::bases<Process>(),
-        "get_typename", &arch::WindowsProcess::get_typename
+        "get_typename", &arch::WindowsProcess::get_typename,
+        "allocate_rwx", [](arch::WindowsProcess* p, uintptr_t addr, size_t size) {
+            return p->allocate(addr, size, PAGE_EXECUTE_READWRITE);
+        },
+        "protect_rwx", [](arch::WindowsProcess* p, uintptr_t addr, size_t size) {
+            return p->protect(addr, size, PAGE_EXECUTE_READWRITE);
+        }
     );
 #endif
+
+    m_lua->new_usertype<Process::Module>("ReGennyProcessModule",
+        "name", &Process::Module::name,
+        "start", &Process::Module::start,
+        "end", &Process::Module::end,
+        "size", &Process::Module::size
+    );
+
+    m_lua->new_usertype<Process::Allocation>("ReGennyProcessAllocation",
+        "start", &Process::Allocation::start,
+        "end", &Process::Allocation::end,
+        "size", &Process::Allocation::size,
+        "read", &Process::Allocation::read,
+        "write", &Process::Allocation::write,
+        "execute", &Process::Allocation::execute
+    );
 
     lua["regenny"] = this;
 
@@ -1029,7 +1142,6 @@ void ReGenny::reset_lua_state() {
         return sol::make_object(s, sol::nil);
     };
 
-
     lua["sdkgenny_string_reader"] = [read_string](sol::this_state s, uintptr_t address) -> sol::object {
         auto lua = sol::state_view{s};
         auto rg = lua["regenny"].get<ReGenny*>();
@@ -1046,10 +1158,76 @@ void ReGenny::reset_lua_state() {
 
         return sol::make_object(s, read_string(process.get(), address, true));
     };
+
+    lua["sdkgenny_writer"] = [](sol::this_state s, uintptr_t address, size_t size, sol::object value) {
+        auto lua = sol::state_view{s};
+        auto rg = lua["regenny"].get<ReGenny*>();
+
+        if (rg == nullptr) {
+            return;
+        }
+
+        auto& process = rg->process();
+
+        if (process == nullptr) {
+            return;
+        }
+
+        switch(size) {
+        case 8:
+            if (!value.is<sol::nil_t>()) {
+                value.push();
+
+                if (lua_isinteger(s, -1)) {
+                    process->write<uint64_t>(address, (uint64_t)lua_tointeger(s, -1));
+                } else if (lua_isnumber(s, -1)) {
+                    process->write<double>(address, lua_tonumber(s, -1));
+                }
+
+                value.pop();
+            } else {
+                process->write<uint64_t>(address, 0);
+            }
+
+            break;
+        case 4:
+            if (!value.is<sol::nil_t>()) {
+                value.push();
+
+                if (lua_isinteger(s, -1)) {
+                    process->write<uint32_t>(address, (uint32_t)lua_tointeger(s, -1));
+                } else if (lua_isnumber(s, -1)) {
+                    process->write<float>(address, (float)lua_tonumber(s, -1));
+                }
+
+                value.pop();
+            } else {
+                process->write<uint32_t>(address, 0);
+            }
+
+            break;
+        case 2:
+            process->write<uint16_t>(address, value.as<uint16_t>());
+            break;
+        case 1:
+            value.push();
+
+            if (lua_isboolean(s, -1)) {
+                process->write<bool>(address, lua_toboolean(s, -1));
+            } else if (lua_isinteger(s, -1)) {
+                process->write<uint8_t>(address, (uint8_t)lua_tointeger(s, -1));
+            }
+
+            value.pop();
+
+            break;
+        }
+    };
+
+    // clang-format on
 }
 
 void ReGenny::parse_editor_text() {
-    reset_lua_state();
     m_ui.editor_error_msg.clear();
 
     auto sdk = std::make_unique<genny::Sdk>();
